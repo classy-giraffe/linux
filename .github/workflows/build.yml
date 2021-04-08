@@ -1,4 +1,4 @@
-name: C/C++ CI
+name: Kernel CI
 
 on:
   push:
@@ -13,5 +13,7 @@ jobs:
 
     steps:
     - uses: actions/checkout@v2
-    - name: make
-      run: make tinyconfig
+    - name: Build kernel
+      run: make -j$(nproc)
+    - name: Build modules
+      run: make -j$(nproc) modules
