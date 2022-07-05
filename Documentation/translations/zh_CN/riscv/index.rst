@@ -2,11 +2,13 @@
 
 .. include:: ../disclaimer-zh_CN.rst
 
-:Original: :doc:`../../../riscv/index`
-:Translator: Yanteng Si <siyanteng@loongson.cn>
+:Original: Documentation/riscv/index.rst
+
+:翻译:
+
+ 司延腾 Yanteng Si <siyanteng@loongson.cn>
 
 .. _cn_riscv_index:
-
 
 ===============
 RISC-V 体系结构
@@ -16,6 +18,7 @@ RISC-V 体系结构
     :maxdepth: 1
 
     boot-image-header
+    vm-layout
     pmu
     patch-acceptance
 

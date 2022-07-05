@@ -1211,7 +1211,7 @@ static int arm_ccn_pmu_offline_cpu(unsigned int cpu, struct hlist_node *node)
 	perf_pmu_migrate_context(&dt->pmu, cpu, target);
 	dt->cpu = target;
 	if (ccn->irq)
-		WARN_ON(irq_set_affinity_hint(ccn->irq, cpumask_of(dt->cpu)));
+		WARN_ON(irq_set_affinity(ccn->irq, cpumask_of(dt->cpu)));
 	return 0;
 }
 
@@ -1291,7 +1291,7 @@ static int arm_ccn_pmu_init(struct arm_ccn *ccn)
 
 	/* Also make sure that the overflow interrupt is handled by this CPU */
 	if (ccn->irq) {
-		err = irq_set_affinity_hint(ccn->irq, cpumask_of(ccn->dt.cpu));
+		err = irq_set_affinity(ccn->irq, cpumask_of(ccn->dt.cpu));
 		if (err) {
 			dev_err(ccn->dev, "Failed to set interrupt affinity!\n");
 			goto error_set_affinity;
@@ -1325,8 +1325,6 @@ static void arm_ccn_pmu_cleanup(struct arm_ccn *ccn)
 
 	cpuhp_state_remove_instance_nocalls(CPUHP_AP_PERF_ARM_CCN_ONLINE,
 					    &ccn->dt.node);
-	if (ccn->irq)
-		irq_set_affinity_hint(ccn->irq, NULL);
 	for (i = 0; i < ccn->num_xps; i++)
 		writel(0, ccn->xp[i].base + CCN_XP_DT_CONTROL);
 	writel(0, ccn->dt.base + CCN_DT_PMCR);
@@ -1462,8 +1460,7 @@ static irqreturn_t arm_ccn_irq_handler(int irq, void *dev_id)
 static int arm_ccn_probe(struct platform_device *pdev)
 {
 	struct arm_ccn *ccn;
-	struct resource *res;
-	unsigned int irq;
+	int irq;
 	int err;
 
 	ccn = devm_kzalloc(&pdev->dev, sizeof(*ccn), GFP_KERNEL);
@@ -1476,10 +1473,9 @@ static int arm_ccn_probe(struct platform_device *pdev)
 	if (IS_ERR(ccn->base))
 		return PTR_ERR(ccn->base);
 
-	res = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
-	if (!res)
-		return -EINVAL;
-	irq = res->start;
+	irq = platform_get_irq(pdev, 0);
+	if (irq < 0)
+		return irq;
 
 	/* Check if we can use the interrupt */
 	writel(CCN_MN_ERRINT_STATUS__PMU_EVENTS__DISABLE,

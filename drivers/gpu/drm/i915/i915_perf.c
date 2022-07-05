@@ -196,17 +196,23 @@
 #include <linux/uuid.h>
 
 #include "gem/i915_gem_context.h"
+#include "gem/i915_gem_internal.h"
 #include "gt/intel_engine_pm.h"
+#include "gt/intel_engine_regs.h"
 #include "gt/intel_engine_user.h"
 #include "gt/intel_execlists_submission.h"
 #include "gt/intel_gpu_commands.h"
 #include "gt/intel_gt.h"
 #include "gt/intel_gt_clock_utils.h"
+#include "gt/intel_gt_regs.h"
 #include "gt/intel_lrc.h"
+#include "gt/intel_lrc_reg.h"
 #include "gt/intel_ring.h"
 
 #include "i915_drv.h"
+#include "i915_file_private.h"
 #include "i915_perf.h"
+#include "i915_perf_oa_regs.h"
 
 /* HW requires this to be a power of two, between 128k and 16M, though driver
  * is currently generally designed assuming the largest 16M size is used such
@@ -719,7 +725,7 @@ static int gen8_append_oa_reports(struct i915_perf_stream *stream,
 		 * it to userspace...
 		 */
 		reason = ((report32[0] >> OAREPORT_REASON_SHIFT) &
-			  (IS_GEN(stream->perf->i915, 12) ?
+			  (GRAPHICS_VER(stream->perf->i915) == 12 ?
 			   OAREPORT_REASON_MASK_EXTENDED :
 			   OAREPORT_REASON_MASK));
 
@@ -734,7 +740,7 @@ static int gen8_append_oa_reports(struct i915_perf_stream *stream,
 		 * understand that the ID has been squashed by the kernel.
 		 */
 		if (!(report32[0] & stream->perf->gen8_valid_ctx_bit) &&
-		    INTEL_GEN(stream->perf->i915) <= 11)
+		    GRAPHICS_VER(stream->perf->i915) <= 11)
 			ctx_id = report32[2] = INVALID_CTX_ID;
 
 		/*
@@ -801,7 +807,7 @@ static int gen8_append_oa_reports(struct i915_perf_stream *stream,
 	if (start_offset != *offset) {
 		i915_reg_t oaheadptr;
 
-		oaheadptr = IS_GEN(stream->perf->i915, 12) ?
+		oaheadptr = GRAPHICS_VER(stream->perf->i915) == 12 ?
 			    GEN12_OAG_OAHEADPTR : GEN8_OAHEADPTR;
 
 		spin_lock_irqsave(&stream->oa_buffer.ptr_lock, flags);
@@ -854,7 +860,7 @@ static int gen8_oa_read(struct i915_perf_stream *stream,
 	if (drm_WARN_ON(&uncore->i915->drm, !stream->oa_buffer.vaddr))
 		return -EIO;
 
-	oastatus_reg = IS_GEN(stream->perf->i915, 12) ?
+	oastatus_reg = GRAPHICS_VER(stream->perf->i915) == 12 ?
 		       GEN12_OAG_OASTATUS : GEN8_OASTATUS;
 
 	oastatus = intel_uncore_read(uncore, oastatus_reg);
@@ -901,7 +907,7 @@ static int gen8_oa_read(struct i915_perf_stream *stream,
 		intel_uncore_rmw(uncore, oastatus_reg,
 				 GEN8_OASTATUS_COUNTER_OVERFLOW |
 				 GEN8_OASTATUS_REPORT_LOST,
-				 IS_GEN_RANGE(uncore->i915, 8, 11) ?
+				 IS_GRAPHICS_VER(uncore->i915, 8, 11) ?
 				 (GEN8_OASTATUS_HEAD_POINTER_WRAP |
 				  GEN8_OASTATUS_TAIL_POINTER_WRAP) : 0);
 	}
@@ -1243,7 +1249,7 @@ static int oa_get_render_ctx_id(struct i915_perf_stream *stream)
 	if (IS_ERR(ce))
 		return PTR_ERR(ce);
 
-	switch (INTEL_GEN(ce->engine->i915)) {
+	switch (GRAPHICS_VER(ce->engine->i915)) {
 	case 7: {
 		/*
 		 * On Haswell we don't do any post processing of the reports
@@ -1256,12 +1262,7 @@ static int oa_get_render_ctx_id(struct i915_perf_stream *stream)
 
 	case 8:
 	case 9:
-	case 10:
-		if (intel_engine_in_execlists_submission_mode(ce->engine)) {
-			stream->specific_ctx_id_mask =
-				(1U << GEN8_CTX_ID_WIDTH) - 1;
-			stream->specific_ctx_id = stream->specific_ctx_id_mask;
-		} else {
+		if (intel_engine_uses_guc(ce->engine)) {
 			/*
 			 * When using GuC, the context descriptor we write in
 			 * i915 is read by GuC and rewritten before it's
@@ -1280,24 +1281,37 @@ static int oa_get_render_ctx_id(struct i915_perf_stream *stream)
 			 */
 			stream->specific_ctx_id_mask =
 				(1U << (GEN8_CTX_ID_WIDTH - 1)) - 1;
+		} else {
+			stream->specific_ctx_id_mask =
+				(1U << GEN8_CTX_ID_WIDTH) - 1;
+			stream->specific_ctx_id = stream->specific_ctx_id_mask;
 		}
 		break;
 
 	case 11:
-	case 12: {
-		stream->specific_ctx_id_mask =
-			((1U << GEN11_SW_CTX_ID_WIDTH) - 1) << (GEN11_SW_CTX_ID_SHIFT - 32);
-		/*
-		 * Pick an unused context id
-		 * 0 - BITS_PER_LONG are used by other contexts
-		 * GEN12_MAX_CONTEXT_HW_ID (0x7ff) is used by idle context
-		 */
-		stream->specific_ctx_id = (GEN12_MAX_CONTEXT_HW_ID - 1) << (GEN11_SW_CTX_ID_SHIFT - 32);
+	case 12:
+		if (GRAPHICS_VER_FULL(ce->engine->i915) >= IP_VER(12, 50)) {
+			stream->specific_ctx_id_mask =
+				((1U << XEHP_SW_CTX_ID_WIDTH) - 1) <<
+				(XEHP_SW_CTX_ID_SHIFT - 32);
+			stream->specific_ctx_id =
+				(XEHP_MAX_CONTEXT_HW_ID - 1) <<
+				(XEHP_SW_CTX_ID_SHIFT - 32);
+		} else {
+			stream->specific_ctx_id_mask =
+				((1U << GEN11_SW_CTX_ID_WIDTH) - 1) << (GEN11_SW_CTX_ID_SHIFT - 32);
+			/*
+			 * Pick an unused context id
+			 * 0 - BITS_PER_LONG are used by other contexts
+			 * GEN12_MAX_CONTEXT_HW_ID (0x7ff) is used by idle context
+			 */
+			stream->specific_ctx_id =
+				(GEN12_MAX_CONTEXT_HW_ID - 1) << (GEN11_SW_CTX_ID_SHIFT - 32);
+		}
 		break;
-	}
 
 	default:
-		MISSING_CASE(INTEL_GEN(ce->engine->i915));
+		MISSING_CASE(GRAPHICS_VER(ce->engine->i915));
 	}
 
 	ce->tag = stream->specific_ctx_id;
@@ -1602,7 +1616,7 @@ static u32 *save_restore_register(struct i915_perf_stream *stream, u32 *cs,
 
 	cmd = save ? MI_STORE_REGISTER_MEM : MI_LOAD_REGISTER_MEM;
 	cmd |= MI_SRM_LRM_GLOBAL_GTT;
-	if (INTEL_GEN(stream->perf->i915) >= 8)
+	if (GRAPHICS_VER(stream->perf->i915) >= 8)
 		cmd++;
 
 	for (d = 0; d < dword_count; d++) {
@@ -1622,8 +1636,8 @@ static int alloc_noa_wait(struct i915_perf_stream *stream)
 	struct drm_i915_gem_object *bo;
 	struct i915_vma *vma;
 	const u64 delay_ticks = 0xffffffffffffffff -
-		intel_gt_ns_to_clock_interval(stream->perf->i915->ggtt.vm.gt,
-					      atomic64_read(&stream->perf->noa_programming_delay));
+		intel_gt_ns_to_clock_interval(to_gt(stream->perf->i915),
+		atomic64_read(&stream->perf->noa_programming_delay));
 	const u32 base = stream->engine->mmio_base;
 #define CS_GPR(x) GEN8_RING_CS_GPR(base, x)
 	u32 *batch, *ts0, *cs, *jump;
@@ -1674,7 +1688,7 @@ retry:
 			stream, cs, true /* save */, CS_GPR(i),
 			INTEL_GT_SCRATCH_FIELD_PERF_CS_GPR + 8 * i, 2);
 	cs = save_restore_register(
-		stream, cs, true /* save */, MI_PREDICATE_RESULT_1,
+		stream, cs, true /* save */, MI_PREDICATE_RESULT_1(RENDER_RING_BASE),
 		INTEL_GT_SCRATCH_FIELD_PERF_PREDICATE_RESULT_1, 1);
 
 	/* First timestamp snapshot location. */
@@ -1728,10 +1742,10 @@ retry:
 	 */
 	*cs++ = MI_LOAD_REGISTER_REG | (3 - 2);
 	*cs++ = i915_mmio_reg_offset(CS_GPR(JUMP_PREDICATE));
-	*cs++ = i915_mmio_reg_offset(MI_PREDICATE_RESULT_1);
+	*cs++ = i915_mmio_reg_offset(MI_PREDICATE_RESULT_1(RENDER_RING_BASE));
 
 	/* Restart from the beginning if we had timestamps roll over. */
-	*cs++ = (INTEL_GEN(i915) < 8 ?
+	*cs++ = (GRAPHICS_VER(i915) < 8 ?
 		 MI_BATCH_BUFFER_START :
 		 MI_BATCH_BUFFER_START_GEN8) |
 		MI_BATCH_PREDICATE;
@@ -1765,10 +1779,10 @@ retry:
 	 */
 	*cs++ = MI_LOAD_REGISTER_REG | (3 - 2);
 	*cs++ = i915_mmio_reg_offset(CS_GPR(JUMP_PREDICATE));
-	*cs++ = i915_mmio_reg_offset(MI_PREDICATE_RESULT_1);
+	*cs++ = i915_mmio_reg_offset(MI_PREDICATE_RESULT_1(RENDER_RING_BASE));
 
 	/* Predicate the jump.  */
-	*cs++ = (INTEL_GEN(i915) < 8 ?
+	*cs++ = (GRAPHICS_VER(i915) < 8 ?
 		 MI_BATCH_BUFFER_START :
 		 MI_BATCH_BUFFER_START_GEN8) |
 		MI_BATCH_PREDICATE;
@@ -1781,7 +1795,7 @@ retry:
 			stream, cs, false /* restore */, CS_GPR(i),
 			INTEL_GT_SCRATCH_FIELD_PERF_CS_GPR + 8 * i, 2);
 	cs = save_restore_register(
-		stream, cs, false /* restore */, MI_PREDICATE_RESULT_1,
+		stream, cs, false /* restore */, MI_PREDICATE_RESULT_1(RENDER_RING_BASE),
 		INTEL_GT_SCRATCH_FIELD_PERF_PREDICATE_RESULT_1, 1);
 
 	/* And return to the ring. */
@@ -1892,7 +1906,7 @@ retry:
 			     oa_config->flex_regs_len);
 
 	/* Jump into the active wait. */
-	*cs++ = (INTEL_GEN(stream->perf->i915) < 8 ?
+	*cs++ = (GRAPHICS_VER(stream->perf->i915) < 8 ?
 		 MI_BATCH_BUFFER_START :
 		 MI_BATCH_BUFFER_START_GEN8);
 	*cs++ = i915_ggtt_offset(stream->noa_wait);
@@ -2106,7 +2120,7 @@ gen8_update_reg_state_unlocked(const struct intel_context *ce,
 	u32 ctx_oactxctrl = stream->perf->ctx_oactxctrl_offset;
 	u32 ctx_flexeu0 = stream->perf->ctx_flexeu0_offset;
 	/* The MMIO offsets for Flex EU registers aren't contiguous */
-	i915_reg_t flex_regs[] = {
+	static const i915_reg_t flex_regs[] = {
 		EU_PERF_CNTL0,
 		EU_PERF_CNTL1,
 		EU_PERF_CNTL2,
@@ -2410,7 +2424,7 @@ gen12_configure_all_contexts(struct i915_perf_stream *stream,
 {
 	struct flex regs[] = {
 		{
-			GEN8_R_PWR_CLK_STATE,
+			GEN8_R_PWR_CLK_STATE(RENDER_RING_BASE),
 			CTX_R_PWR_CLK_STATE,
 		},
 	};
@@ -2430,7 +2444,7 @@ lrc_configure_all_contexts(struct i915_perf_stream *stream,
 #define ctx_flexeuN(N) (ctx_flexeu0 + 2 * (N) + 1)
 	struct flex regs[] = {
 		{
-			GEN8_R_PWR_CLK_STATE,
+			GEN8_R_PWR_CLK_STATE(RENDER_RING_BASE),
 			CTX_R_PWR_CLK_STATE,
 		},
 		{
@@ -2492,7 +2506,7 @@ gen8_enable_metric_set(struct i915_perf_stream *stream,
 	 * be read back from automatically triggered reports, as part of the
 	 * RPT_ID field.
 	 */
-	if (IS_GEN_RANGE(stream->perf->i915, 9, 11)) {
+	if (IS_GRAPHICS_VER(stream->perf->i915, 9, 11)) {
 		intel_uncore_write(uncore, GEN8_OA_DEBUG,
 				   _MASKED_BIT_ENABLE(GEN9_OA_DEBUG_DISABLE_CLK_RATIO_REPORTS |
 						      GEN9_OA_DEBUG_INCLUDE_CLK_RATIO));
@@ -2580,7 +2594,7 @@ static void gen8_disable_metric_set(struct i915_perf_stream *stream)
 	intel_uncore_rmw(uncore, GDT_CHICKEN_BITS, GT_NOA_ENABLE, 0);
 }
 
-static void gen10_disable_metric_set(struct i915_perf_stream *stream)
+static void gen11_disable_metric_set(struct i915_perf_stream *stream)
 {
 	struct intel_uncore *uncore = stream->uncore;
 
@@ -2797,7 +2811,7 @@ get_default_sseu_config(struct intel_sseu *out_sseu,
 
 	*out_sseu = intel_sseu_from_device_info(devinfo_sseu);
 
-	if (IS_GEN(engine->i915, 11)) {
+	if (GRAPHICS_VER(engine->i915) == 11) {
 		/*
 		 * We only need subslice count so it doesn't matter which ones
 		 * we select - just turn off low bits in the amount of half of
@@ -2864,7 +2878,7 @@ static int i915_oa_stream_init(struct i915_perf_stream *stream,
 	}
 
 	if (!(props->sample_flags & SAMPLE_OA_REPORT) &&
-	    (INTEL_GEN(perf->i915) < 12 || !stream->ctx)) {
+	    (GRAPHICS_VER(perf->i915) < 12 || !stream->ctx)) {
 		DRM_DEBUG("Only OA report sampling supported\n");
 		return -EINVAL;
 	}
@@ -3006,7 +3020,7 @@ void i915_oa_init_reg_state(const struct intel_context *ce,
 
 	/* perf.exclusive_stream serialised by lrc_configure_all_contexts() */
 	stream = READ_ONCE(engine->i915->perf.exclusive_stream);
-	if (stream && INTEL_GEN(stream->perf->i915) < 12)
+	if (stream && GRAPHICS_VER(stream->perf->i915) < 12)
 		gen8_update_reg_state_unlocked(ce, stream);
 }
 
@@ -3414,10 +3428,10 @@ i915_perf_open_ioctl_locked(struct i915_perf *perf,
 		struct drm_i915_file_private *file_priv = file->driver_priv;
 
 		specific_ctx = i915_gem_context_lookup(file_priv, ctx_handle);
-		if (!specific_ctx) {
+		if (IS_ERR(specific_ctx)) {
 			DRM_DEBUG("Failed to look up context with ID %u for opening perf stream\n",
 				  ctx_handle);
-			ret = -ENOENT;
+			ret = PTR_ERR(specific_ctx);
 			goto err;
 		}
 	}
@@ -3443,7 +3457,7 @@ i915_perf_open_ioctl_locked(struct i915_perf *perf,
 	 */
 	if (IS_HASWELL(perf->i915) && specific_ctx)
 		privileged_op = false;
-	else if (IS_GEN(perf->i915, 12) && specific_ctx &&
+	else if (GRAPHICS_VER(perf->i915) == 12 && specific_ctx &&
 		 (props->sample_flags & SAMPLE_OA_REPORT) == 0)
 		privileged_op = false;
 
@@ -3534,7 +3548,7 @@ err:
 
 static u64 oa_exponent_to_ns(struct i915_perf *perf, int exponent)
 {
-	return intel_gt_clock_interval_to_ns(perf->i915->ggtt.vm.gt,
+	return intel_gt_clock_interval_to_ns(to_gt(perf->i915),
 					     2ULL << exponent);
 }
 
@@ -3854,80 +3868,116 @@ static bool gen8_is_valid_flex_addr(struct i915_perf *perf, u32 addr)
 	return false;
 }
 
-#define ADDR_IN_RANGE(addr, start, end) \
-	((addr) >= (start) && \
-	 (addr) <= (end))
+static bool reg_in_range_table(u32 addr, const struct i915_range *table)
+{
+	while (table->start || table->end) {
+		if (addr >= table->start && addr <= table->end)
+			return true;
 
-#define REG_IN_RANGE(addr, start, end) \
-	((addr) >= i915_mmio_reg_offset(start) && \
-	 (addr) <= i915_mmio_reg_offset(end))
+		table++;
+	}
+
+	return false;
+}
 
 #define REG_EQUAL(addr, mmio) \
 	((addr) == i915_mmio_reg_offset(mmio))
 
+static const struct i915_range gen7_oa_b_counters[] = {
+	{ .start = 0x2710, .end = 0x272c },	/* OASTARTTRIG[1-8] */
+	{ .start = 0x2740, .end = 0x275c },	/* OAREPORTTRIG[1-8] */
+	{ .start = 0x2770, .end = 0x27ac },	/* OACEC[0-7][0-1] */
+	{}
+};
+
+static const struct i915_range gen12_oa_b_counters[] = {
+	{ .start = 0x2b2c, .end = 0x2b2c },	/* GEN12_OAG_OA_PESS */
+	{ .start = 0xd900, .end = 0xd91c },	/* GEN12_OAG_OASTARTTRIG[1-8] */
+	{ .start = 0xd920, .end = 0xd93c },	/* GEN12_OAG_OAREPORTTRIG1[1-8] */
+	{ .start = 0xd940, .end = 0xd97c },	/* GEN12_OAG_CEC[0-7][0-1] */
+	{ .start = 0xdc00, .end = 0xdc3c },	/* GEN12_OAG_SCEC[0-7][0-1] */
+	{ .start = 0xdc40, .end = 0xdc40 },	/* GEN12_OAG_SPCTR_CNF */
+	{ .start = 0xdc44, .end = 0xdc44 },	/* GEN12_OAA_DBG_REG */
+	{}
+};
+
+static const struct i915_range gen7_oa_mux_regs[] = {
+	{ .start = 0x91b8, .end = 0x91cc },	/* OA_PERFCNT[1-2], OA_PERFMATRIX */
+	{ .start = 0x9800, .end = 0x9888 },	/* MICRO_BP0_0 - NOA_WRITE */
+	{ .start = 0xe180, .end = 0xe180 },	/* HALF_SLICE_CHICKEN2 */
+	{}
+};
+
+static const struct i915_range hsw_oa_mux_regs[] = {
+	{ .start = 0x09e80, .end = 0x09ea4 }, /* HSW_MBVID2_NOA[0-9] */
+	{ .start = 0x09ec0, .end = 0x09ec0 }, /* HSW_MBVID2_MISR0 */
+	{ .start = 0x25100, .end = 0x2ff90 },
+	{}
+};
+
+static const struct i915_range chv_oa_mux_regs[] = {
+	{ .start = 0x182300, .end = 0x1823a4 },
+	{}
+};
+
+static const struct i915_range gen8_oa_mux_regs[] = {
+	{ .start = 0x0d00, .end = 0x0d2c },	/* RPM_CONFIG[0-1], NOA_CONFIG[0-8] */
+	{ .start = 0x20cc, .end = 0x20cc },	/* WAIT_FOR_RC6_EXIT */
+	{}
+};
+
+static const struct i915_range gen11_oa_mux_regs[] = {
+	{ .start = 0x91c8, .end = 0x91dc },	/* OA_PERFCNT[3-4] */
+	{}
+};
+
+static const struct i915_range gen12_oa_mux_regs[] = {
+	{ .start = 0x0d00, .end = 0x0d04 },     /* RPM_CONFIG[0-1] */
+	{ .start = 0x0d0c, .end = 0x0d2c },     /* NOA_CONFIG[0-8] */
+	{ .start = 0x9840, .end = 0x9840 },	/* GDT_CHICKEN_BITS */
+	{ .start = 0x9884, .end = 0x9888 },	/* NOA_WRITE */
+	{ .start = 0x20cc, .end = 0x20cc },	/* WAIT_FOR_RC6_EXIT */
+	{}
+};
+
 static bool gen7_is_valid_b_counter_addr(struct i915_perf *perf, u32 addr)
 {
-	return REG_IN_RANGE(addr, OASTARTTRIG1, OASTARTTRIG8) ||
-	       REG_IN_RANGE(addr, OAREPORTTRIG1, OAREPORTTRIG8) ||
-	       REG_IN_RANGE(addr, OACEC0_0, OACEC7_1);
-}
-
-static bool gen7_is_valid_mux_addr(struct i915_perf *perf, u32 addr)
-{
-	return REG_EQUAL(addr, HALF_SLICE_CHICKEN2) ||
-	       REG_IN_RANGE(addr, MICRO_BP0_0, NOA_WRITE) ||
-	       REG_IN_RANGE(addr, OA_PERFCNT1_LO, OA_PERFCNT2_HI) ||
-	       REG_IN_RANGE(addr, OA_PERFMATRIX_LO, OA_PERFMATRIX_HI);
+	return reg_in_range_table(addr, gen7_oa_b_counters);
 }
 
 static bool gen8_is_valid_mux_addr(struct i915_perf *perf, u32 addr)
 {
-	return gen7_is_valid_mux_addr(perf, addr) ||
-	       REG_EQUAL(addr, WAIT_FOR_RC6_EXIT) ||
-	       REG_IN_RANGE(addr, RPM_CONFIG0, NOA_CONFIG(8));
+	return reg_in_range_table(addr, gen7_oa_mux_regs) ||
+		reg_in_range_table(addr, gen8_oa_mux_regs);
 }
 
-static bool gen10_is_valid_mux_addr(struct i915_perf *perf, u32 addr)
+static bool gen11_is_valid_mux_addr(struct i915_perf *perf, u32 addr)
 {
-	return gen8_is_valid_mux_addr(perf, addr) ||
-	       REG_EQUAL(addr, GEN10_NOA_WRITE_HIGH) ||
-	       REG_IN_RANGE(addr, OA_PERFCNT3_LO, OA_PERFCNT4_HI);
+	return reg_in_range_table(addr, gen7_oa_mux_regs) ||
+		reg_in_range_table(addr, gen8_oa_mux_regs) ||
+		reg_in_range_table(addr, gen11_oa_mux_regs);
 }
 
 static bool hsw_is_valid_mux_addr(struct i915_perf *perf, u32 addr)
 {
-	return gen7_is_valid_mux_addr(perf, addr) ||
-	       ADDR_IN_RANGE(addr, 0x25100, 0x2FF90) ||
-	       REG_IN_RANGE(addr, HSW_MBVID2_NOA0, HSW_MBVID2_NOA9) ||
-	       REG_EQUAL(addr, HSW_MBVID2_MISR0);
+	return reg_in_range_table(addr, gen7_oa_mux_regs) ||
+		reg_in_range_table(addr, hsw_oa_mux_regs);
 }
 
 static bool chv_is_valid_mux_addr(struct i915_perf *perf, u32 addr)
 {
-	return gen7_is_valid_mux_addr(perf, addr) ||
-	       ADDR_IN_RANGE(addr, 0x182300, 0x1823A4);
+	return reg_in_range_table(addr, gen7_oa_mux_regs) ||
+		reg_in_range_table(addr, chv_oa_mux_regs);
 }
 
 static bool gen12_is_valid_b_counter_addr(struct i915_perf *perf, u32 addr)
 {
-	return REG_IN_RANGE(addr, GEN12_OAG_OASTARTTRIG1, GEN12_OAG_OASTARTTRIG8) ||
-	       REG_IN_RANGE(addr, GEN12_OAG_OAREPORTTRIG1, GEN12_OAG_OAREPORTTRIG8) ||
-	       REG_IN_RANGE(addr, GEN12_OAG_CEC0_0, GEN12_OAG_CEC7_1) ||
-	       REG_IN_RANGE(addr, GEN12_OAG_SCEC0_0, GEN12_OAG_SCEC7_1) ||
-	       REG_EQUAL(addr, GEN12_OAA_DBG_REG) ||
-	       REG_EQUAL(addr, GEN12_OAG_OA_PESS) ||
-	       REG_EQUAL(addr, GEN12_OAG_SPCTR_CNF);
+	return reg_in_range_table(addr, gen12_oa_b_counters);
 }
 
 static bool gen12_is_valid_mux_addr(struct i915_perf *perf, u32 addr)
 {
-	return REG_EQUAL(addr, NOA_WRITE) ||
-	       REG_EQUAL(addr, GEN10_NOA_WRITE_HIGH) ||
-	       REG_EQUAL(addr, GDT_CHICKEN_BITS) ||
-	       REG_EQUAL(addr, WAIT_FOR_RC6_EXIT) ||
-	       REG_EQUAL(addr, RPM_CONFIG0) ||
-	       REG_EQUAL(addr, RPM_CONFIG1) ||
-	       REG_IN_RANGE(addr, NOA_CONFIG(0), NOA_CONFIG(8));
+	return reg_in_range_table(addr, gen12_oa_mux_regs);
 }
 
 static u32 mask_reg_value(u32 reg, u32 val)
@@ -4000,8 +4050,8 @@ addr_err:
 	return ERR_PTR(err);
 }
 
-static ssize_t show_dynamic_id(struct device *dev,
-			       struct device_attribute *attr,
+static ssize_t show_dynamic_id(struct kobject *kobj,
+			       struct kobj_attribute *attr,
 			       char *buf)
 {
 	struct i915_oa_config *oa_config =
@@ -4119,7 +4169,7 @@ int i915_perf_add_config_ioctl(struct drm_device *dev, void *data,
 	}
 	oa_config->b_counter_regs = regs;
 
-	if (INTEL_GEN(perf->i915) < 8) {
+	if (GRAPHICS_VER(perf->i915) < 8) {
 		if (args->n_flex_regs != 0) {
 			err = -EINVAL;
 			goto reg_err;
@@ -4265,26 +4315,6 @@ static struct ctl_table oa_table[] = {
 	{}
 };
 
-static struct ctl_table i915_root[] = {
-	{
-	 .procname = "i915",
-	 .maxlen = 0,
-	 .mode = 0555,
-	 .child = oa_table,
-	 },
-	{}
-};
-
-static struct ctl_table dev_root[] = {
-	{
-	 .procname = "dev",
-	 .maxlen = 0,
-	 .mode = 0555,
-	 .child = i915_root,
-	 },
-	{}
-};
-
 static void oa_init_supported_formats(struct i915_perf *perf)
 {
 	struct drm_i915_private *i915 = perf->i915;
@@ -4310,7 +4340,6 @@ static void oa_init_supported_formats(struct i915_perf *perf)
 	case INTEL_GEMINILAKE:
 	case INTEL_COFFEELAKE:
 	case INTEL_COMETLAKE:
-	case INTEL_CANNONLAKE:
 	case INTEL_ICELAKE:
 	case INTEL_ELKHARTLAKE:
 	case INTEL_JASPERLAKE:
@@ -4318,6 +4347,7 @@ static void oa_init_supported_formats(struct i915_perf *perf)
 	case INTEL_ROCKETLAKE:
 	case INTEL_DG1:
 	case INTEL_ALDERLAKE_S:
+	case INTEL_ALDERLAKE_P:
 		oa_format_add(perf, I915_OA_FORMAT_A12);
 		oa_format_add(perf, I915_OA_FORMAT_A12_B8_C8);
 		oa_format_add(perf, I915_OA_FORMAT_A32u40_A4u32_B8_C8);
@@ -4344,6 +4374,10 @@ void i915_perf_init(struct drm_i915_private *i915)
 
 	/* XXX const struct i915_perf_ops! */
 
+	/* i915_perf is not enabled for DG2 yet */
+	if (IS_DG2(i915))
+		return;
+
 	perf->oa_formats = oa_formats;
 	if (IS_HASWELL(i915)) {
 		perf->ops.is_valid_b_counter_reg = gen7_is_valid_b_counter_addr;
@@ -4364,7 +4398,7 @@ void i915_perf_init(struct drm_i915_private *i915)
 		 */
 		perf->ops.read = gen8_oa_read;
 
-		if (IS_GEN_RANGE(i915, 8, 9)) {
+		if (IS_GRAPHICS_VER(i915, 8, 9)) {
 			perf->ops.is_valid_b_counter_reg =
 				gen7_is_valid_b_counter_addr;
 			perf->ops.is_valid_mux_reg =
@@ -4383,7 +4417,7 @@ void i915_perf_init(struct drm_i915_private *i915)
 			perf->ops.disable_metric_set = gen8_disable_metric_set;
 			perf->ops.oa_hw_tail_read = gen8_oa_hw_tail_read;
 
-			if (IS_GEN(i915, 8)) {
+			if (GRAPHICS_VER(i915) == 8) {
 				perf->ctx_oactxctrl_offset = 0x120;
 				perf->ctx_flexeu0_offset = 0x2ce;
 
@@ -4394,29 +4428,25 @@ void i915_perf_init(struct drm_i915_private *i915)
 
 				perf->gen8_valid_ctx_bit = BIT(16);
 			}
-		} else if (IS_GEN_RANGE(i915, 10, 11)) {
+		} else if (GRAPHICS_VER(i915) == 11) {
 			perf->ops.is_valid_b_counter_reg =
 				gen7_is_valid_b_counter_addr;
 			perf->ops.is_valid_mux_reg =
-				gen10_is_valid_mux_addr;
+				gen11_is_valid_mux_addr;
 			perf->ops.is_valid_flex_reg =
 				gen8_is_valid_flex_addr;
 
 			perf->ops.oa_enable = gen8_oa_enable;
 			perf->ops.oa_disable = gen8_oa_disable;
 			perf->ops.enable_metric_set = gen8_enable_metric_set;
-			perf->ops.disable_metric_set = gen10_disable_metric_set;
+			perf->ops.disable_metric_set = gen11_disable_metric_set;
 			perf->ops.oa_hw_tail_read = gen8_oa_hw_tail_read;
 
-			if (IS_GEN(i915, 10)) {
-				perf->ctx_oactxctrl_offset = 0x128;
-				perf->ctx_flexeu0_offset = 0x3de;
-			} else {
-				perf->ctx_oactxctrl_offset = 0x124;
-				perf->ctx_flexeu0_offset = 0x78e;
-			}
+			perf->ctx_oactxctrl_offset = 0x124;
+			perf->ctx_flexeu0_offset = 0x78e;
+
 			perf->gen8_valid_ctx_bit = BIT(16);
-		} else if (IS_GEN(i915, 12)) {
+		} else if (GRAPHICS_VER(i915) == 12) {
 			perf->ops.is_valid_b_counter_reg =
 				gen12_is_valid_b_counter_addr;
 			perf->ops.is_valid_mux_reg =
@@ -4439,7 +4469,7 @@ void i915_perf_init(struct drm_i915_private *i915)
 		mutex_init(&perf->lock);
 
 		/* Choose a representative limit */
-		oa_sample_rate_hard_limit = i915->gt.clock_frequency / 2;
+		oa_sample_rate_hard_limit = to_gt(i915)->clock_frequency / 2;
 
 		mutex_init(&perf->metrics_lock);
 		idr_init_base(&perf->metrics_idr, 1);
@@ -4482,9 +4512,10 @@ static int destroy_config(int id, void *p, void *data)
 	return 0;
 }
 
-void i915_perf_sysctl_register(void)
+int i915_perf_sysctl_register(void)
 {
-	sysctl_header = register_sysctl_table(dev_root);
+	sysctl_header = register_sysctl("dev/i915", oa_table);
+	return 0;
 }
 
 void i915_perf_sysctl_unregister(void)

@@ -293,8 +293,6 @@ int rtllib_wx_set_encode(struct rtllib_device *ieee,
 	int i, key, key_provided, len;
 	struct lib80211_crypt_data **crypt;
 
-	netdev_dbg(ieee->dev, "%s()\n", __func__);
-
 	key = erq->flags & IW_ENCODE_INDEX;
 	if (key) {
 		if (key > NUM_WEP_KEYS)
@@ -462,8 +460,6 @@ int rtllib_wx_get_encode(struct rtllib_device *ieee,
 	struct iw_point *erq = &(wrqu->encoding);
 	int len, key;
 	struct lib80211_crypt_data *crypt;
-
-	netdev_dbg(ieee->dev, "%s()\n", __func__);
 
 	if (ieee->iw_mode == IW_MODE_MONITOR)
 		return -1;
@@ -664,7 +660,7 @@ int rtllib_wx_set_mlme(struct rtllib_device *ieee,
 {
 	u8 i = 0;
 	bool deauth = false;
-	struct iw_mlme *mlme = (struct iw_mlme *) extra;
+	struct iw_mlme *mlme = (struct iw_mlme *)extra;
 
 	if (ieee->state != RTLLIB_LINKED)
 		return -ENOLINK;

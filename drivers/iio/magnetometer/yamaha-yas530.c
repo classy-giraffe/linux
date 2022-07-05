@@ -639,7 +639,7 @@ static int yas532_get_calibration_data(struct yas5xx *yas5xx)
 	dev_dbg(yas5xx->dev, "calibration data: %*ph\n", 14, data);
 
 	/* Sanity check, is this all zeroes? */
-	if (memchr_inv(data, 0x00, 13)) {
+	if (memchr_inv(data, 0x00, 13) == NULL) {
 		if (!(data[13] & BIT(7)))
 			dev_warn(yas5xx->dev, "calibration is blank!\n");
 	}
@@ -831,7 +831,7 @@ static int yas5xx_probe(struct i2c_client *i2c,
 	yas5xx->dev = dev;
 	mutex_init(&yas5xx->lock);
 
-	ret = iio_read_mount_matrix(dev, "mount-matrix", &yas5xx->orientation);
+	ret = iio_read_mount_matrix(dev, &yas5xx->orientation);
 	if (ret)
 		return ret;
 

@@ -683,13 +683,13 @@ static int rt711_sdca_set_fu1e_capture_ctl(struct rt711_sdca_priv *rt711)
 	ch_r = (rt711->fu1e_dapm_mute || rt711->fu1e_mixer_r_mute) ? 0x01 : 0x00;
 
 	err = regmap_write(rt711->regmap,
-			SDW_SDCA_CTL(FUNC_NUM_JACK_CODEC, RT711_SDCA_ENT_USER_FU1E,
+			SDW_SDCA_CTL(FUNC_NUM_MIC_ARRAY, RT711_SDCA_ENT_USER_FU1E,
 			RT711_SDCA_CTL_FU_MUTE, CH_L), ch_l);
 	if (err < 0)
 		return err;
 
 	err = regmap_write(rt711->regmap,
-			SDW_SDCA_CTL(FUNC_NUM_JACK_CODEC, RT711_SDCA_ENT_USER_FU1E,
+			SDW_SDCA_CTL(FUNC_NUM_MIC_ARRAY, RT711_SDCA_ENT_USER_FU1E,
 			RT711_SDCA_CTL_FU_MUTE, CH_R), ch_r);
 	if (err < 0)
 		return err;
@@ -1208,6 +1208,7 @@ static const struct snd_soc_component_driver soc_sdca_dev_rt711 = {
 	.num_dapm_routes = ARRAY_SIZE(rt711_sdca_audio_map),
 	.set_jack = rt711_sdca_set_jack_detect,
 	.remove = rt711_sdca_remove,
+	.endianness = 1,
 };
 
 static int rt711_sdca_set_sdw_stream(struct snd_soc_dai *dai, void *sdw_stream,
@@ -1358,7 +1359,7 @@ static int rt711_sdca_pcm_hw_free(struct snd_pcm_substream *substream,
 static const struct snd_soc_dai_ops rt711_sdca_ops = {
 	.hw_params	= rt711_sdca_pcm_hw_params,
 	.hw_free	= rt711_sdca_pcm_hw_free,
-	.set_sdw_stream	= rt711_sdca_set_sdw_stream,
+	.set_stream	= rt711_sdca_set_sdw_stream,
 	.shutdown	= rt711_sdca_shutdown,
 };
 
@@ -1410,6 +1411,8 @@ int rt711_sdca_init(struct device *dev, struct regmap *regmap,
 	rt711->slave = slave;
 	rt711->regmap = regmap;
 	rt711->mbq_regmap = mbq_regmap;
+
+	mutex_init(&rt711->disable_irq_lock);
 
 	/*
 	 * Mark hw_init to false
@@ -1494,12 +1497,16 @@ int rt711_sdca_io_init(struct device *dev, struct sdw_slave *slave)
 	int ret = 0;
 	unsigned int val;
 
+	rt711->disable_irq = false;
+
 	if (rt711->hw_init)
 		return 0;
 
 	if (rt711->first_hw_init) {
 		regcache_cache_only(rt711->regmap, false);
 		regcache_cache_bypass(rt711->regmap, true);
+		regcache_cache_only(rt711->mbq_regmap, false);
+		regcache_cache_bypass(rt711->mbq_regmap, true);
 	} else {
 		/*
 		 * PM runtime is only enabled when a Slave reports as Attached
@@ -1565,6 +1572,8 @@ int rt711_sdca_io_init(struct device *dev, struct sdw_slave *slave)
 	if (rt711->first_hw_init) {
 		regcache_cache_bypass(rt711->regmap, false);
 		regcache_mark_dirty(rt711->regmap);
+		regcache_cache_bypass(rt711->mbq_regmap, false);
+		regcache_mark_dirty(rt711->mbq_regmap);
 	} else
 		rt711->first_hw_init = true;
 

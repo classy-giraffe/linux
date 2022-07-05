@@ -765,6 +765,7 @@ static const struct snd_soc_component_driver soc_codec_dev_rt715_sdca = {
 	.num_dapm_widgets = ARRAY_SIZE(rt715_sdca_dapm_widgets),
 	.dapm_routes = rt715_sdca_audio_map,
 	.num_dapm_routes = ARRAY_SIZE(rt715_sdca_audio_map),
+	.endianness = 1,
 };
 
 static int rt715_sdca_set_sdw_stream(struct snd_soc_dai *dai, void *sdw_stream,
@@ -938,7 +939,7 @@ static int rt715_sdca_pcm_hw_free(struct snd_pcm_substream *substream,
 static const struct snd_soc_dai_ops rt715_sdca_ops = {
 	.hw_params	= rt715_sdca_pcm_hw_params,
 	.hw_free	= rt715_sdca_pcm_hw_free,
-	.set_sdw_stream	= rt715_sdca_set_sdw_stream,
+	.set_stream	= rt715_sdca_set_sdw_stream,
 	.shutdown	= rt715_sdca_shutdown,
 };
 
@@ -997,7 +998,7 @@ int rt715_sdca_init(struct device *dev, struct regmap *mbq_regmap,
 	 * HW init will be performed when device reports present
 	 */
 	rt715->hw_init = false;
-	rt715->first_init = false;
+	rt715->first_hw_init = false;
 
 	ret = devm_snd_soc_register_component(dev,
 			&soc_codec_dev_rt715_sdca,
@@ -1018,7 +1019,7 @@ int rt715_sdca_io_init(struct device *dev, struct sdw_slave *slave)
 	/*
 	 * PM runtime is only enabled when a Slave reports as Attached
 	 */
-	if (!rt715->first_init) {
+	if (!rt715->first_hw_init) {
 		/* set autosuspend parameters */
 		pm_runtime_set_autosuspend_delay(&slave->dev, 3000);
 		pm_runtime_use_autosuspend(&slave->dev);
@@ -1031,7 +1032,7 @@ int rt715_sdca_io_init(struct device *dev, struct sdw_slave *slave)
 
 		pm_runtime_enable(&slave->dev);
 
-		rt715->first_init = true;
+		rt715->first_hw_init = true;
 	}
 
 	pm_runtime_get_noresume(&slave->dev);
@@ -1054,6 +1055,9 @@ int rt715_sdca_io_init(struct device *dev, struct sdw_slave *slave)
 		rt715_sdca_index_update_bits(rt715, RT715_VENDOR_REG,
 			RT715_REV_1, 0x40, 0x40);
 	}
+	/* DFLL Calibration trigger */
+	rt715_sdca_index_update_bits(rt715, RT715_VENDOR_REG,
+			RT715_DFLL_VAD, 0x1, 0x1);
 	/* trigger mode = VAD enable */
 	regmap_write(rt715->regmap,
 		SDW_SDCA_CTL(FUN_MIC_ARRAY, RT715_SDCA_SMPU_TRIG_ST_EN,

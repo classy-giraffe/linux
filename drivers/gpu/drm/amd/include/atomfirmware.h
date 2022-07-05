@@ -3,7 +3,7 @@
 *  File Name      atomfirmware.h
 *  Project        This is an interface header file between atombios and OS GPU drivers for SoC15 products
 *
-*  Description    header file of general definitions for OS nd pre-OS video drivers 
+*  Description    header file of general definitions for OS and pre-OS video drivers
 *
 *  Copyright 2014 Advanced Micro Devices, Inc.
 *
@@ -197,6 +197,9 @@ enum atom_dp_vs_preemph_def{
   DP_VS_LEVEL0_PREEMPH_LEVEL3 = 0x18,
 };
 
+#define BIOS_ATOM_PREFIX   "ATOMBIOS"
+#define BIOS_VERSION_PREFIX  "ATOMBIOSBK-AMD"
+#define BIOS_STRING_LENGTH 43
 
 /*
 enum atom_string_def{
@@ -209,12 +212,14 @@ atom_bios_string          = "ATOM"
 #pragma pack(1)                          /* BIOS data must use byte aligment*/
 
 enum atombios_image_offset{
-OFFSET_TO_ATOM_ROM_HEADER_POINTER          =0x00000048,
-OFFSET_TO_ATOM_ROM_IMAGE_SIZE              =0x00000002,
-OFFSET_TO_ATOMBIOS_ASIC_BUS_MEM_TYPE       =0x94,
-MAXSIZE_OF_ATOMBIOS_ASIC_BUS_MEM_TYPE      =20,  /*including the terminator 0x0!*/
-OFFSET_TO_GET_ATOMBIOS_NUMBER_OF_STRINGS   =0x2f,
-OFFSET_TO_GET_ATOMBIOS_STRING_START        =0x6e,
+  OFFSET_TO_ATOM_ROM_HEADER_POINTER          = 0x00000048,
+  OFFSET_TO_ATOM_ROM_IMAGE_SIZE              = 0x00000002,
+  OFFSET_TO_ATOMBIOS_ASIC_BUS_MEM_TYPE       = 0x94,
+  MAXSIZE_OF_ATOMBIOS_ASIC_BUS_MEM_TYPE      = 20,  /*including the terminator 0x0!*/
+  OFFSET_TO_GET_ATOMBIOS_NUMBER_OF_STRINGS   = 0x2f,
+  OFFSET_TO_GET_ATOMBIOS_STRING_START        = 0x6e,
+  OFFSET_TO_VBIOS_PART_NUMBER                = 0x80,
+  OFFSET_TO_VBIOS_DATE                       = 0x50,
 };
 
 /****************************************************************************   
@@ -501,6 +506,7 @@ enum atombios_firmware_capability
 	ATOM_FIRMWARE_CAP_SRAM_ECC      = 0x00000200,
 	ATOM_FIRMWARE_CAP_ENABLE_2STAGE_BIST_TRAINING  = 0x00000400,
 	ATOM_FIRMWARE_CAP_ENABLE_2ND_USB20PORT = 0x0008000,
+	ATOM_FIRMWARE_CAP_DYNAMIC_BOOT_CFG_ENABLE = 0x0020000,
 };
 
 enum atom_cooling_solution_id{
@@ -584,7 +590,7 @@ struct atom_firmware_info_v3_4 {
 	uint8_t  board_i2c_feature_id;            // enum of atom_board_i2c_feature_id_def
 	uint8_t  board_i2c_feature_gpio_id;       // i2c id find in gpio_lut data table gpio_id
 	uint8_t  board_i2c_feature_slave_addr;
-	uint8_t  reserved3;
+	uint8_t  ras_rom_i2c_slave_addr;
 	uint16_t bootup_mvddq_mv;
 	uint16_t bootup_mvpp_mv;
 	uint32_t zfbstartaddrin16mb;
@@ -762,6 +768,10 @@ enum atom_encoder_caps_def
   ATOM_ENCODER_CAP_RECORD_HBR2_EN               =0x02,         // DP1.2 HBR2 setting is qualified and HBR2 can be enabled 
   ATOM_ENCODER_CAP_RECORD_HDMI6Gbps_EN          =0x04,         // HDMI2.0 6Gbps enable or not. 
   ATOM_ENCODER_CAP_RECORD_HBR3_EN               =0x08,         // DP1.3 HBR3 is supported by board. 
+  ATOM_ENCODER_CAP_RECORD_DP2                   =0x10,         // DP2 is supported by ASIC/board.
+  ATOM_ENCODER_CAP_RECORD_UHBR10_EN             =0x20,         // DP2.0 UHBR10 settings is supported by board
+  ATOM_ENCODER_CAP_RECORD_UHBR13_5_EN           =0x40,         // DP2.0 UHBR13.5 settings is supported by board
+  ATOM_ENCODER_CAP_RECORD_UHBR20_EN             =0x80,         // DP2.0 UHBR20 settings is supported by board
   ATOM_ENCODER_CAP_RECORD_USB_C_TYPE            =0x100,        // the DP connector is a USB-C type.
 };
 
@@ -877,7 +887,8 @@ struct  atom_bracket_layout_record
 };
 
 enum atom_display_device_tag_def{
-  ATOM_DISPLAY_LCD1_SUPPORT            = 0x0002,  //an embedded display is either an LVDS or eDP signal type of display
+  ATOM_DISPLAY_LCD1_SUPPORT            = 0x0002, //an embedded display is either an LVDS or eDP signal type of display
+  ATOM_DISPLAY_LCD2_SUPPORT			       = 0x0020, //second edp device tag 0x0020 for backward compability
   ATOM_DISPLAY_DFP1_SUPPORT            = 0x0008,
   ATOM_DISPLAY_DFP2_SUPPORT            = 0x0080,
   ATOM_DISPLAY_DFP3_SUPPORT            = 0x0200,
@@ -1407,6 +1418,59 @@ struct atom_integrated_system_info_v2_1
 
 };
 
+struct atom_n6_display_phy_tuning_set {
+	uint8_t display_signal_type;
+	uint8_t phy_sel;
+	uint8_t preset_level;
+	uint8_t reserved1;
+	uint32_t reserved2;
+	uint32_t speed_upto;
+	uint8_t tx_vboost_level;
+	uint8_t tx_vreg_v2i;
+	uint8_t tx_vregdrv_byp;
+	uint8_t tx_term_cntl;
+	uint8_t tx_peak_level;
+	uint8_t tx_slew_en;
+	uint8_t tx_eq_pre;
+	uint8_t tx_eq_main;
+	uint8_t tx_eq_post;
+	uint8_t tx_en_inv_pre;
+	uint8_t tx_en_inv_post;
+	uint8_t reserved3;
+	uint32_t reserved4;
+	uint32_t reserved5;
+	uint32_t reserved6;
+};
+
+struct atom_display_phy_tuning_info {
+	struct atom_common_table_header table_header;
+	struct atom_n6_display_phy_tuning_set disp_phy_tuning[1];
+};
+
+struct atom_integrated_system_info_v2_2
+{
+	struct  atom_common_table_header  table_header;
+	uint32_t  vbios_misc;                       //enum of atom_system_vbiosmisc_def
+	uint32_t  gpucapinfo;                       //enum of atom_system_gpucapinf_def
+	uint32_t  system_config;
+	uint32_t  cpucapinfo;
+	uint16_t  gpuclk_ss_percentage;             //unit of 0.001%,   1000 mean 1%
+	uint16_t  gpuclk_ss_type;
+	uint16_t  dpphy_override;                   // bit vector, enum of atom_sysinfo_dpphy_override_def
+	uint8_t   memorytype;                       // enum of atom_dmi_t17_mem_type_def, APU memory type indication.
+	uint8_t   umachannelnumber;                 // number of memory channels
+	uint8_t   htc_hyst_limit;
+	uint8_t   htc_tmp_limit;
+	uint8_t   reserved1;
+	uint8_t   reserved2;
+	struct edp_info_table edp1_info;
+	struct edp_info_table edp2_info;
+	uint32_t  reserved3[8];
+	struct atom_external_display_connection_info extdispconninfo;
+
+	uint32_t  reserved4[189];
+};
+
 // system_config
 enum atom_system_vbiosmisc_def{
   INTEGRATED_SYSTEM_INFO__GET_EDID_CALLBACK_FUNC_SUPPORT = 0x01,
@@ -1609,6 +1673,39 @@ struct atom_gfx_info_v2_7 {
 	uint32_t reserved2[6];
 };
 
+struct atom_gfx_info_v3_0 {
+	struct atom_common_table_header table_header;
+	uint8_t gfxip_min_ver;
+	uint8_t gfxip_max_ver;
+	uint8_t max_shader_engines;
+	uint8_t max_tile_pipes;
+	uint8_t max_cu_per_sh;
+	uint8_t max_sh_per_se;
+	uint8_t max_backends_per_se;
+	uint8_t max_texture_channel_caches;
+	uint32_t regaddr_lsdma_queue0_rb_rptr;
+	uint32_t regaddr_lsdma_queue0_rb_rptr_hi;
+	uint32_t regaddr_lsdma_queue0_rb_wptr;
+	uint32_t regaddr_lsdma_queue0_rb_wptr_hi;
+	uint32_t regaddr_lsdma_command;
+	uint32_t regaddr_lsdma_status;
+	uint32_t regaddr_golden_tsc_count_lower;
+	uint32_t golden_tsc_count_lower_refclk;
+	uint8_t active_wgp_per_se;
+	uint8_t active_rb_per_se;
+	uint8_t active_se;
+	uint8_t reserved1;
+	uint32_t sram_rm_fuses_val;
+	uint32_t sram_custom_rm_fuses_val;
+	uint32_t inactive_sa_mask;
+	uint32_t gc_config;
+	uint8_t inactive_wgp[16];
+	uint8_t inactive_rb[16];
+	uint32_t gdfll_as_wait_ctrl_val;
+	uint32_t gdfll_as_step_ctrl_val;
+	uint32_t reserved[8];
+};
+
 /* 
   ***************************************************************************
     Data Table smu_info  structure
@@ -1707,6 +1804,130 @@ struct atom_smu_info_v3_3 {
   uint16_t waflclk_ss_percentage;    // in unit of 0.001%
   uint16_t smuinitoffset;
   uint32_t reserved;
+};
+
+struct atom_smu_info_v3_6
+{
+	struct   atom_common_table_header  table_header;
+	uint8_t  smuip_min_ver;
+	uint8_t  smuip_max_ver;
+	uint8_t  waflclk_ss_mode;
+	uint8_t  gpuclk_ss_mode;
+	uint16_t sclk_ss_percentage;
+	uint16_t sclk_ss_rate_10hz;
+	uint16_t gpuclk_ss_percentage;
+	uint16_t gpuclk_ss_rate_10hz;
+	uint32_t core_refclk_10khz;
+	uint32_t syspll0_1_vco_freq_10khz;
+	uint32_t syspll0_2_vco_freq_10khz;
+	uint8_t  pcc_gpio_bit;
+	uint8_t  pcc_gpio_polarity;
+	uint16_t smugoldenoffset;
+	uint32_t syspll0_0_vco_freq_10khz;
+	uint32_t bootup_smnclk_10khz;
+	uint32_t bootup_socclk_10khz;
+	uint32_t bootup_mp0clk_10khz;
+	uint32_t bootup_mp1clk_10khz;
+	uint32_t bootup_lclk_10khz;
+	uint32_t bootup_dxioclk_10khz;
+	uint32_t ctf_threshold_override_value;
+	uint32_t syspll3_0_vco_freq_10khz;
+	uint32_t syspll3_1_vco_freq_10khz;
+	uint32_t bootup_fclk_10khz;
+	uint32_t bootup_waflclk_10khz;
+	uint32_t smu_info_caps;
+	uint16_t waflclk_ss_percentage;
+	uint16_t smuinitoffset;
+	uint32_t bootup_gfxavsclk_10khz;
+	uint32_t bootup_mpioclk_10khz;
+	uint32_t smb_slave_address;
+	uint32_t cg_fdo_ctrl0_val;
+	uint32_t cg_fdo_ctrl1_val;
+	uint32_t cg_fdo_ctrl2_val;
+	uint32_t gdfll_as_wait_ctrl_val;
+	uint32_t gdfll_as_step_ctrl_val;
+	uint32_t reserved_clk;
+	uint32_t fclk_syspll_refclk_10khz;
+	uint32_t smusvi_svc0_val;
+	uint32_t smusvi_svc1_val;
+	uint32_t smusvi_svd0_val;
+	uint32_t smusvi_svd1_val;
+	uint32_t smusvi_svt0_val;
+	uint32_t smusvi_svt1_val;
+	uint32_t cg_tach_ctrl_val;
+	uint32_t cg_pump_ctrl1_val;
+	uint32_t cg_pump_tach_ctrl_val;
+	uint32_t thm_ctf_delay_val;
+	uint32_t thm_thermal_int_ctrl_val;
+	uint32_t thm_tmon_config_val;
+	uint32_t bootup_vclk_10khz;
+	uint32_t bootup_dclk_10khz;
+	uint32_t smu_gpiopad_pu_en_val;
+	uint32_t smu_gpiopad_pd_en_val;
+	uint32_t reserved[12];
+};
+
+struct atom_smu_info_v4_0 {
+	struct atom_common_table_header table_header;
+	uint32_t bootup_gfxclk_bypass_10khz;
+	uint32_t bootup_usrclk_10khz;
+	uint32_t bootup_csrclk_10khz;
+	uint32_t core_refclk_10khz;
+	uint32_t syspll1_vco_freq_10khz;
+	uint32_t syspll2_vco_freq_10khz;
+	uint8_t pcc_gpio_bit;
+	uint8_t pcc_gpio_polarity;
+	uint16_t bootup_vddusr_mv;
+	uint32_t syspll0_vco_freq_10khz;
+	uint32_t bootup_smnclk_10khz;
+	uint32_t bootup_socclk_10khz;
+	uint32_t bootup_mp0clk_10khz;
+	uint32_t bootup_mp1clk_10khz;
+	uint32_t bootup_lclk_10khz;
+	uint32_t bootup_dcefclk_10khz;
+	uint32_t ctf_threshold_override_value;
+	uint32_t syspll3_vco_freq_10khz;
+	uint32_t mm_syspll_vco_freq_10khz;
+	uint32_t bootup_fclk_10khz;
+	uint32_t bootup_waflclk_10khz;
+	uint32_t smu_info_caps;
+	uint16_t waflclk_ss_percentage;
+	uint16_t smuinitoffset;
+	uint32_t bootup_dprefclk_10khz;
+	uint32_t bootup_usbclk_10khz;
+	uint32_t smb_slave_address;
+	uint32_t cg_fdo_ctrl0_val;
+	uint32_t cg_fdo_ctrl1_val;
+	uint32_t cg_fdo_ctrl2_val;
+	uint32_t gdfll_as_wait_ctrl_val;
+	uint32_t gdfll_as_step_ctrl_val;
+	uint32_t bootup_dtbclk_10khz;
+	uint32_t fclk_syspll_refclk_10khz;
+	uint32_t smusvi_svc0_val;
+	uint32_t smusvi_svc1_val;
+	uint32_t smusvi_svd0_val;
+	uint32_t smusvi_svd1_val;
+	uint32_t smusvi_svt0_val;
+	uint32_t smusvi_svt1_val;
+	uint32_t cg_tach_ctrl_val;
+	uint32_t cg_pump_ctrl1_val;
+	uint32_t cg_pump_tach_ctrl_val;
+	uint32_t thm_ctf_delay_val;
+	uint32_t thm_thermal_int_ctrl_val;
+	uint32_t thm_tmon_config_val;
+	uint32_t smbus_timing_cntrl0_val;
+	uint32_t smbus_timing_cntrl1_val;
+	uint32_t smbus_timing_cntrl2_val;
+	uint32_t pwr_disp_timer_global_control_val;
+	uint32_t bootup_mpioclk_10khz;
+	uint32_t bootup_dclk0_10khz;
+	uint32_t bootup_vclk0_10khz;
+	uint32_t bootup_dclk1_10khz;
+	uint32_t bootup_vclk1_10khz;
+	uint32_t bootup_baco400clk_10khz;
+	uint32_t bootup_baco1200clk_bypass_10khz;
+	uint32_t bootup_baco700clk_bypass_10khz;
+	uint32_t reserved[16];
 };
 
 /*
@@ -2726,6 +2947,51 @@ struct atom_vram_info_header_v2_3 {
   uint8_t  umcip_max_ver;
   uint8_t  mc_phy_tile_num;                              // indicate the MCD tile number which use in DramDataRemapTbl and usMcAdjustPerTileTblOffset
   struct   atom_vram_module_v9  vram_module[16];         // just for allocation, real number of blocks is in ucNumOfVRAMModule;
+};
+
+/*
+  ***************************************************************************
+    Data Table vram_info v3.0  structure
+  ***************************************************************************
+*/
+struct atom_vram_module_v3_0 {
+	uint8_t density;
+	uint8_t tunningset_id;
+	uint8_t ext_memory_id;
+	uint8_t dram_vendor_id;
+	uint16_t dram_info_offset;
+	uint16_t mem_tuning_offset;
+	uint16_t tmrs_seq_offset;
+	uint16_t reserved1;
+	uint32_t dram_size_per_ch;
+	uint32_t reserved[3];
+	char dram_pnstring[40];
+};
+
+struct atom_vram_info_header_v3_0 {
+	struct atom_common_table_header table_header;
+	uint16_t mem_tuning_table_offset;
+	uint16_t dram_info_table_offset;
+	uint16_t tmrs_table_offset;
+	uint16_t mc_init_table_offset;
+	uint16_t dram_data_remap_table_offset;
+	uint16_t umc_emuinittable_offset;
+	uint16_t reserved_sub_table_offset[2];
+	uint8_t vram_module_num;
+	uint8_t umcip_min_ver;
+	uint8_t umcip_max_ver;
+	uint8_t mc_phy_tile_num;
+	uint8_t memory_type;
+	uint8_t channel_num;
+	uint8_t channel_width;
+	uint8_t reserved1;
+	uint32_t channel_enable;
+	uint32_t channel1_enable;
+	uint32_t feature_enable;
+	uint32_t feature1_enable;
+	uint32_t hardcode_mem_size;
+	uint32_t reserved4[4];
+	struct atom_vram_module_v3_0 vram_module[8];
 };
 
 struct atom_umc_register_addr_info{

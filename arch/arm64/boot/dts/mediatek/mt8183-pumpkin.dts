@@ -55,7 +55,7 @@
 		};
 	};
 
-	ntc {
+	thermistor {
 		compatible = "murata,ncp03wf104";
 		pullup-uv = <1800000>;
 		pullup-ohm = <390000>;
@@ -66,6 +66,11 @@
 
 &auxadc {
 	status = "okay";
+};
+
+&gpu {
+	mali-supply = <&mt6358_vgpu_reg>;
+	sram-supply = <&mt6358_vsram_gpu_reg>;
 };
 
 &i2c0 {

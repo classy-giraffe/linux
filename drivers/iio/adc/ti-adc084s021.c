@@ -210,9 +210,6 @@ static int adc084s021_probe(struct spi_device *spi)
 	adc = iio_priv(indio_dev);
 	adc->spi = spi;
 
-	/* Connect the SPI device and the iio dev */
-	spi_set_drvdata(spi, indio_dev);
-
 	/* Initiate the Industrial I/O device */
 	indio_dev->name = spi_get_device_id(spi)->name;
 	indio_dev->modes = INDIO_DIRECT_MODE;
@@ -251,7 +248,7 @@ static const struct of_device_id adc084s021_of_match[] = {
 MODULE_DEVICE_TABLE(of, adc084s021_of_match);
 
 static const struct spi_device_id adc084s021_id[] = {
-	{ ADC084S021_DRIVER_NAME, 0},
+	{ ADC084S021_DRIVER_NAME, 0 },
 	{}
 };
 MODULE_DEVICE_TABLE(spi, adc084s021_id);
