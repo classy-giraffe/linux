@@ -29,12 +29,12 @@ static void __ap_flush_queue(struct ap_queue *aq);
  */
 static int ap_queue_enable_irq(struct ap_queue *aq, void *ind)
 {
+	union ap_qirq_ctrl qirqctrl = { .value = 0 };
 	struct ap_queue_status status;
-	struct ap_qirq_ctrl qirqctrl = { 0 };
 
 	qirqctrl.ir = 1;
 	qirqctrl.isc = AP_ISC;
-	status = ap_aqic(aq->qid, qirqctrl, ind);
+	status = ap_aqic(aq->qid, qirqctrl, virt_to_phys(ind));
 	switch (status.response_code) {
 	case AP_RESPONSE_NORMAL:
 	case AP_RESPONSE_OTHERWISE_CHANGED:

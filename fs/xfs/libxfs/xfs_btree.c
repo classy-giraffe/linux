@@ -91,10 +91,9 @@ xfs_btree_check_lblock_siblings(
 
 static inline xfs_failaddr_t
 xfs_btree_check_sblock_siblings(
-	struct xfs_mount	*mp,
+	struct xfs_perag	*pag,
 	struct xfs_btree_cur	*cur,
 	int			level,
-	xfs_agnumber_t		agno,
 	xfs_agblock_t		agbno,
 	__be32			dsibling)
 {
@@ -110,7 +109,7 @@ xfs_btree_check_sblock_siblings(
 		if (!xfs_btree_check_sptr(cur, sibling, level + 1))
 			return __this_address;
 	} else {
-		if (!xfs_verify_agbno(mp, agno, sibling))
+		if (!xfs_verify_agbno(pag, sibling))
 			return __this_address;
 	}
 	return NULL;
@@ -195,11 +194,11 @@ __xfs_btree_check_sblock(
 	struct xfs_buf		*bp)
 {
 	struct xfs_mount	*mp = cur->bc_mp;
+	struct xfs_perag	*pag = cur->bc_ag.pag;
 	xfs_btnum_t		btnum = cur->bc_btnum;
 	int			crc = xfs_has_crc(mp);
 	xfs_failaddr_t		fa;
 	xfs_agblock_t		agbno = NULLAGBLOCK;
-	xfs_agnumber_t		agno = NULLAGNUMBER;
 
 	if (crc) {
 		if (!uuid_equal(&block->bb_u.s.bb_uuid, &mp->m_sb.sb_meta_uuid))
@@ -217,16 +216,14 @@ __xfs_btree_check_sblock(
 	    cur->bc_ops->get_maxrecs(cur, level))
 		return __this_address;
 
-	if (bp) {
+	if (bp)
 		agbno = xfs_daddr_to_agbno(mp, xfs_buf_daddr(bp));
-		agno = xfs_daddr_to_agno(mp, xfs_buf_daddr(bp));
-	}
 
-	fa = xfs_btree_check_sblock_siblings(mp, cur, level, agno, agbno,
+	fa = xfs_btree_check_sblock_siblings(pag, cur, level, agbno,
 			block->bb_u.s.bb_leftsib);
 	if (!fa)
-		fa = xfs_btree_check_sblock_siblings(mp, cur, level, agno,
-				 agbno, block->bb_u.s.bb_rightsib);
+		fa = xfs_btree_check_sblock_siblings(pag, cur, level, agbno,
+				block->bb_u.s.bb_rightsib);
 	return fa;
 }
 
@@ -288,7 +285,7 @@ xfs_btree_check_sptr(
 {
 	if (level <= 0)
 		return false;
-	return xfs_verify_agbno(cur->bc_mp, cur->bc_ag.pag->pag_agno, agbno);
+	return xfs_verify_agbno(cur->bc_ag.pag, agbno);
 }
 
 /*
@@ -725,7 +722,7 @@ xfs_btree_ifork_ptr(
 
 	if (cur->bc_flags & XFS_BTREE_STAGING)
 		return cur->bc_ino.ifake->if_fork;
-	return XFS_IFORK_PTR(cur->bc_ino.ip, cur->bc_ino.whichfork);
+	return xfs_ifork_ptr(cur->bc_ino.ip, cur->bc_ino.whichfork);
 }
 
 /*
@@ -2916,9 +2913,22 @@ xfs_btree_split_worker(
 }
 
 /*
- * BMBT split requests often come in with little stack to work on. Push
+ * BMBT split requests often come in with little stack to work on so we push
  * them off to a worker thread so there is lots of stack to use. For the other
  * btree types, just call directly to avoid the context switch overhead here.
+ *
+ * Care must be taken here - the work queue rescuer thread introduces potential
+ * AGF <> worker queue deadlocks if the BMBT block allocation has to lock new
+ * AGFs to allocate blocks. A task being run by the rescuer could attempt to
+ * lock an AGF that is already locked by a task queued to run by the rescuer,
+ * resulting in an ABBA deadlock as the rescuer cannot run the lock holder to
+ * release it until the current thread it is running gains the lock.
+ *
+ * To avoid this issue, we only ever queue BMBT splits that don't have an AGF
+ * already locked to allocate from. The only place that doesn't hold an AGF
+ * locked is unwritten extent conversion at IO completion, but that has already
+ * been offloaded to a worker thread and hence has no stack consumption issues
+ * we have to worry about.
  */
 STATIC int					/* error */
 xfs_btree_split(
@@ -2932,7 +2942,8 @@ xfs_btree_split(
 	struct xfs_btree_split_args	args;
 	DECLARE_COMPLETION_ONSTACK(done);
 
-	if (cur->bc_btnum != XFS_BTNUM_BMAP)
+	if (cur->bc_btnum != XFS_BTNUM_BMAP ||
+	    cur->bc_tp->t_highest_agno == NULLAGNUMBER)
 		return __xfs_btree_split(cur, level, ptrp, key, curp, stat);
 
 	args.cur = cur;
@@ -3559,7 +3570,7 @@ xfs_btree_kill_iroot(
 {
 	int			whichfork = cur->bc_ino.whichfork;
 	struct xfs_inode	*ip = cur->bc_ino.ip;
-	struct xfs_ifork	*ifp = XFS_IFORK_PTR(ip, whichfork);
+	struct xfs_ifork	*ifp = xfs_ifork_ptr(ip, whichfork);
 	struct xfs_btree_block	*block;
 	struct xfs_btree_block	*cblock;
 	union xfs_btree_key	*kp;
@@ -4595,7 +4606,6 @@ xfs_btree_sblock_verify(
 {
 	struct xfs_mount	*mp = bp->b_mount;
 	struct xfs_btree_block	*block = XFS_BUF_TO_BLOCK(bp);
-	xfs_agnumber_t		agno;
 	xfs_agblock_t		agbno;
 	xfs_failaddr_t		fa;
 
@@ -4604,12 +4614,11 @@ xfs_btree_sblock_verify(
 		return __this_address;
 
 	/* sibling pointer verification */
-	agno = xfs_daddr_to_agno(mp, xfs_buf_daddr(bp));
 	agbno = xfs_daddr_to_agbno(mp, xfs_buf_daddr(bp));
-	fa = xfs_btree_check_sblock_siblings(mp, NULL, -1, agno, agbno,
+	fa = xfs_btree_check_sblock_siblings(bp->b_pag, NULL, -1, agbno,
 			block->bb_u.s.bb_leftsib);
 	if (!fa)
-		fa = xfs_btree_check_sblock_siblings(mp, NULL, -1, agno, agbno,
+		fa = xfs_btree_check_sblock_siblings(bp->b_pag, NULL, -1, agbno,
 				block->bb_u.s.bb_rightsib);
 	return fa;
 }
@@ -4671,7 +4680,12 @@ xfs_btree_space_to_height(
 	const unsigned int	*limits,
 	unsigned long long	leaf_blocks)
 {
-	unsigned long long	node_blocks = limits[1];
+	/*
+	 * The root btree block can have fewer than minrecs pointers in it
+	 * because the tree might not be big enough to require that amount of
+	 * fanout. Hence it has a minimum size of 2 pointers, not limits[1].
+	 */
+	unsigned long long	node_blocks = 2;
 	unsigned long long	blocks_left = leaf_blocks - 1;
 	unsigned int		height = 1;
 

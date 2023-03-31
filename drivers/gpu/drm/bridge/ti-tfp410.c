@@ -6,6 +6,7 @@
 
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
+#include <linux/media-bus-format.h>
 #include <linux/module.h>
 #include <linux/of_graph.h>
 #include <linux/platform_device.h>
@@ -14,6 +15,7 @@
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_bridge.h>
 #include <drm/drm_crtc.h>
+#include <drm/drm_edid.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
 
@@ -377,8 +379,7 @@ static struct platform_driver tfp410_platform_driver = {
 
 #if IS_ENABLED(CONFIG_I2C)
 /* There is currently no i2c functionality. */
-static int tfp410_i2c_probe(struct i2c_client *client,
-			    const struct i2c_device_id *id)
+static int tfp410_i2c_probe(struct i2c_client *client)
 {
 	int reg;
 
@@ -392,11 +393,9 @@ static int tfp410_i2c_probe(struct i2c_client *client,
 	return tfp410_init(&client->dev, true);
 }
 
-static int tfp410_i2c_remove(struct i2c_client *client)
+static void tfp410_i2c_remove(struct i2c_client *client)
 {
 	tfp410_fini(&client->dev);
-
-	return 0;
 }
 
 static const struct i2c_device_id tfp410_i2c_ids[] = {
@@ -411,7 +410,7 @@ static struct i2c_driver tfp410_i2c_driver = {
 		.of_match_table = of_match_ptr(tfp410_match),
 	},
 	.id_table	= tfp410_i2c_ids,
-	.probe		= tfp410_i2c_probe,
+	.probe_new	= tfp410_i2c_probe,
 	.remove		= tfp410_i2c_remove,
 };
 #endif /* IS_ENABLED(CONFIG_I2C) */

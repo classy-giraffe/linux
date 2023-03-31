@@ -4,6 +4,7 @@
  */
 
 #include <linux/clk.h>
+#include <linux/media-bus-format.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -17,7 +18,6 @@
 #include <drm/drm_of.h>
 #include <drm/drm_panel.h>
 
-#define LDB_CTRL				0x5c
 #define LDB_CTRL_CH0_ENABLE			BIT(0)
 #define LDB_CTRL_CH0_DI_SELECT			BIT(1)
 #define LDB_CTRL_CH1_ENABLE			BIT(2)
@@ -34,9 +34,13 @@
 #define LDB_CTRL_ASYNC_FIFO_ENABLE		BIT(24)
 #define LDB_CTRL_ASYNC_FIFO_THRESHOLD_MASK	GENMASK(27, 25)
 
-#define LVDS_CTRL				0x128
 #define LVDS_CTRL_CH0_EN			BIT(0)
 #define LVDS_CTRL_CH1_EN			BIT(1)
+/*
+ * LVDS_CTRL_LVDS_EN bit is poorly named in i.MX93 reference manual.
+ * Clear it to enable LVDS and set it to disable LVDS.
+ */
+#define LVDS_CTRL_LVDS_EN			BIT(1)
 #define LVDS_CTRL_VBG_EN			BIT(2)
 #define LVDS_CTRL_HS_EN				BIT(3)
 #define LVDS_CTRL_PRE_EMPH_EN			BIT(4)
@@ -51,6 +55,29 @@
 #define LVDS_CTRL_VBG_ADJ(n)			(((n) & 0x7) << 17)
 #define LVDS_CTRL_VBG_ADJ_MASK			GENMASK(19, 17)
 
+enum fsl_ldb_devtype {
+	IMX8MP_LDB,
+	IMX93_LDB,
+};
+
+struct fsl_ldb_devdata {
+	u32 ldb_ctrl;
+	u32 lvds_ctrl;
+	bool lvds_en_bit;
+};
+
+static const struct fsl_ldb_devdata fsl_ldb_devdata[] = {
+	[IMX8MP_LDB] = {
+		.ldb_ctrl = 0x5c,
+		.lvds_ctrl = 0x128,
+	},
+	[IMX93_LDB] = {
+		.ldb_ctrl = 0x20,
+		.lvds_ctrl = 0x24,
+		.lvds_en_bit = true,
+	},
+};
+
 struct fsl_ldb {
 	struct device *dev;
 	struct drm_bridge bridge;
@@ -58,11 +85,20 @@ struct fsl_ldb {
 	struct clk *clk;
 	struct regmap *regmap;
 	bool lvds_dual_link;
+	const struct fsl_ldb_devdata *devdata;
 };
 
 static inline struct fsl_ldb *to_fsl_ldb(struct drm_bridge *bridge)
 {
 	return container_of(bridge, struct fsl_ldb, bridge);
+}
+
+static unsigned long fsl_ldb_link_frequency(struct fsl_ldb *fsl_ldb, int clock)
+{
+	if (fsl_ldb->lvds_dual_link)
+		return clock * 3500;
+	else
+		return clock * 7000;
 }
 
 static int fsl_ldb_attach(struct drm_bridge *bridge,
@@ -72,22 +108,6 @@ static int fsl_ldb_attach(struct drm_bridge *bridge,
 
 	return drm_bridge_attach(bridge->encoder, fsl_ldb->panel_bridge,
 				 bridge, flags);
-}
-
-static int fsl_ldb_atomic_check(struct drm_bridge *bridge,
-				struct drm_bridge_state *bridge_state,
-				struct drm_crtc_state *crtc_state,
-				struct drm_connector_state *conn_state)
-{
-	/* Invert DE signal polarity. */
-	bridge_state->input_bus_cfg.flags &= ~(DRM_BUS_FLAG_DE_LOW |
-					       DRM_BUS_FLAG_DE_HIGH);
-	if (bridge_state->output_bus_cfg.flags & DRM_BUS_FLAG_DE_LOW)
-		bridge_state->input_bus_cfg.flags |= DRM_BUS_FLAG_DE_HIGH;
-	else if (bridge_state->output_bus_cfg.flags & DRM_BUS_FLAG_DE_HIGH)
-		bridge_state->input_bus_cfg.flags |= DRM_BUS_FLAG_DE_LOW;
-
-	return 0;
 }
 
 static void fsl_ldb_atomic_enable(struct drm_bridge *bridge,
@@ -100,6 +120,8 @@ static void fsl_ldb_atomic_enable(struct drm_bridge *bridge,
 	const struct drm_display_mode *mode;
 	struct drm_connector *connector;
 	struct drm_crtc *crtc;
+	unsigned long configured_link_freq;
+	unsigned long requested_link_freq;
 	bool lvds_format_24bpp;
 	bool lvds_format_jeida;
 	u32 reg;
@@ -143,17 +165,22 @@ static void fsl_ldb_atomic_enable(struct drm_bridge *bridge,
 	crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
 	mode = &crtc_state->adjusted_mode;
 
-	if (fsl_ldb->lvds_dual_link)
-		clk_set_rate(fsl_ldb->clk, mode->clock * 3500);
-	else
-		clk_set_rate(fsl_ldb->clk, mode->clock * 7000);
+	requested_link_freq = fsl_ldb_link_frequency(fsl_ldb, mode->clock);
+	clk_set_rate(fsl_ldb->clk, requested_link_freq);
+
+	configured_link_freq = clk_get_rate(fsl_ldb->clk);
+	if (configured_link_freq != requested_link_freq)
+		dev_warn(fsl_ldb->dev, "Configured LDB clock (%lu Hz) does not match requested LVDS clock: %lu Hz",
+			 configured_link_freq,
+			 requested_link_freq);
+
 	clk_prepare_enable(fsl_ldb->clk);
 
 	/* Program LDB_CTRL */
 	reg = LDB_CTRL_CH0_ENABLE;
 
 	if (fsl_ldb->lvds_dual_link)
-		reg |= LDB_CTRL_CH1_ENABLE;
+		reg |= LDB_CTRL_CH1_ENABLE | LDB_CTRL_SPLIT_MODE;
 
 	if (lvds_format_24bpp) {
 		reg |= LDB_CTRL_CH0_DATA_WIDTH;
@@ -173,12 +200,12 @@ static void fsl_ldb_atomic_enable(struct drm_bridge *bridge,
 			reg |= LDB_CTRL_DI1_VSYNC_POLARITY;
 	}
 
-	regmap_write(fsl_ldb->regmap, LDB_CTRL, reg);
+	regmap_write(fsl_ldb->regmap, fsl_ldb->devdata->ldb_ctrl, reg);
 
 	/* Program LVDS_CTRL */
 	reg = LVDS_CTRL_CC_ADJ(2) | LVDS_CTRL_PRE_EMPH_EN |
 	      LVDS_CTRL_PRE_EMPH_ADJ(3) | LVDS_CTRL_VBG_EN;
-	regmap_write(fsl_ldb->regmap, LVDS_CTRL, reg);
+	regmap_write(fsl_ldb->regmap, fsl_ldb->devdata->lvds_ctrl, reg);
 
 	/* Wait for VBG to stabilize. */
 	usleep_range(15, 20);
@@ -187,7 +214,7 @@ static void fsl_ldb_atomic_enable(struct drm_bridge *bridge,
 	if (fsl_ldb->lvds_dual_link)
 		reg |= LVDS_CTRL_CH1_EN;
 
-	regmap_write(fsl_ldb->regmap, LVDS_CTRL, reg);
+	regmap_write(fsl_ldb->regmap, fsl_ldb->devdata->lvds_ctrl, reg);
 }
 
 static void fsl_ldb_atomic_disable(struct drm_bridge *bridge,
@@ -195,9 +222,14 @@ static void fsl_ldb_atomic_disable(struct drm_bridge *bridge,
 {
 	struct fsl_ldb *fsl_ldb = to_fsl_ldb(bridge);
 
-	/* Stop both channels. */
-	regmap_write(fsl_ldb->regmap, LVDS_CTRL, 0);
-	regmap_write(fsl_ldb->regmap, LDB_CTRL, 0);
+	/* Stop channel(s). */
+	if (fsl_ldb->devdata->lvds_en_bit)
+		/* Set LVDS_CTRL_LVDS_EN bit to disable. */
+		regmap_write(fsl_ldb->regmap, fsl_ldb->devdata->lvds_ctrl,
+			     LVDS_CTRL_LVDS_EN);
+	else
+		regmap_write(fsl_ldb->regmap, fsl_ldb->devdata->lvds_ctrl, 0);
+	regmap_write(fsl_ldb->regmap, fsl_ldb->devdata->ldb_ctrl, 0);
 
 	clk_disable_unprepare(fsl_ldb->clk);
 }
@@ -233,7 +265,7 @@ fsl_ldb_mode_valid(struct drm_bridge *bridge,
 {
 	struct fsl_ldb *fsl_ldb = to_fsl_ldb(bridge);
 
-	if (mode->clock > (fsl_ldb->lvds_dual_link ? 80000 : 160000))
+	if (mode->clock > (fsl_ldb->lvds_dual_link ? 160000 : 80000))
 		return MODE_CLOCK_HIGH;
 
 	return MODE_OK;
@@ -241,7 +273,6 @@ fsl_ldb_mode_valid(struct drm_bridge *bridge,
 
 static const struct drm_bridge_funcs funcs = {
 	.attach = fsl_ldb_attach,
-	.atomic_check = fsl_ldb_atomic_check,
 	.atomic_enable = fsl_ldb_atomic_enable,
 	.atomic_disable = fsl_ldb_atomic_disable,
 	.atomic_duplicate_state = drm_atomic_helper_bridge_duplicate_state,
@@ -263,6 +294,10 @@ static int fsl_ldb_probe(struct platform_device *pdev)
 	fsl_ldb = devm_kzalloc(dev, sizeof(*fsl_ldb), GFP_KERNEL);
 	if (!fsl_ldb)
 		return -ENOMEM;
+
+	fsl_ldb->devdata = of_device_get_match_data(dev);
+	if (!fsl_ldb->devdata)
+		return -EINVAL;
 
 	fsl_ldb->dev = &pdev->dev;
 	fsl_ldb->bridge.funcs = &funcs;
@@ -322,7 +357,10 @@ static int fsl_ldb_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id fsl_ldb_match[] = {
-	{ .compatible = "fsl,imx8mp-ldb", },
+	{ .compatible = "fsl,imx8mp-ldb",
+	  .data = &fsl_ldb_devdata[IMX8MP_LDB], },
+	{ .compatible = "fsl,imx93-ldb",
+	  .data = &fsl_ldb_devdata[IMX93_LDB], },
 	{ /* sentinel */ },
 };
 MODULE_DEVICE_TABLE(of, fsl_ldb_match);

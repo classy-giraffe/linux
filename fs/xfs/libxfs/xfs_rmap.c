@@ -215,7 +215,7 @@ xfs_rmap_get_rec(
 	int			*stat)
 {
 	struct xfs_mount	*mp = cur->bc_mp;
-	xfs_agnumber_t		agno = cur->bc_ag.pag->pag_agno;
+	struct xfs_perag	*pag = cur->bc_ag.pag;
 	union xfs_btree_rec	*rec;
 	int			error;
 
@@ -235,13 +235,8 @@ xfs_rmap_get_rec(
 			goto out_bad_rec;
 	} else {
 		/* check for valid extent range, including overflow */
-		if (!xfs_verify_agbno(mp, agno, irec->rm_startblock))
-			goto out_bad_rec;
-		if (irec->rm_startblock >
-				irec->rm_startblock + irec->rm_blockcount)
-			goto out_bad_rec;
-		if (!xfs_verify_agbno(mp, agno,
-				irec->rm_startblock + irec->rm_blockcount - 1))
+		if (!xfs_verify_agbext(pag, irec->rm_startblock,
+					    irec->rm_blockcount))
 			goto out_bad_rec;
 	}
 
@@ -254,7 +249,7 @@ xfs_rmap_get_rec(
 out_bad_rec:
 	xfs_warn(mp,
 		"Reverse Mapping BTree record corruption in AG %d detected!",
-		agno);
+		pag->pag_agno);
 	xfs_warn(mp,
 		"Owner 0x%llx, flags 0x%x, start block 0x%x block count 0x%x",
 		irec->rm_owner, irec->rm_flags, irec->rm_startblock,
@@ -2395,13 +2390,7 @@ xfs_rmap_finish_one_cleanup(
 int
 xfs_rmap_finish_one(
 	struct xfs_trans		*tp,
-	enum xfs_rmap_intent_type	type,
-	uint64_t			owner,
-	int				whichfork,
-	xfs_fileoff_t			startoff,
-	xfs_fsblock_t			startblock,
-	xfs_filblks_t			blockcount,
-	xfs_exntst_t			state,
+	struct xfs_rmap_intent		*ri,
 	struct xfs_btree_cur		**pcur)
 {
 	struct xfs_mount		*mp = tp->t_mountp;
@@ -2413,11 +2402,13 @@ xfs_rmap_finish_one(
 	xfs_agblock_t			bno;
 	bool				unwritten;
 
-	pag = xfs_perag_get(mp, XFS_FSB_TO_AGNO(mp, startblock));
-	bno = XFS_FSB_TO_AGBNO(mp, startblock);
+	pag = xfs_perag_get(mp, XFS_FSB_TO_AGNO(mp, ri->ri_bmap.br_startblock));
+	bno = XFS_FSB_TO_AGBNO(mp, ri->ri_bmap.br_startblock);
 
-	trace_xfs_rmap_deferred(mp, pag->pag_agno, type, bno, owner, whichfork,
-			startoff, blockcount, state);
+	trace_xfs_rmap_deferred(mp, pag->pag_agno, ri->ri_type, bno,
+			ri->ri_owner, ri->ri_whichfork,
+			ri->ri_bmap.br_startoff, ri->ri_bmap.br_blockcount,
+			ri->ri_bmap.br_state);
 
 	if (XFS_TEST_ERROR(false, mp, XFS_ERRTAG_RMAP_FINISH_ONE)) {
 		error = -EIO;
@@ -2453,35 +2444,37 @@ xfs_rmap_finish_one(
 	}
 	*pcur = rcur;
 
-	xfs_rmap_ino_owner(&oinfo, owner, whichfork, startoff);
-	unwritten = state == XFS_EXT_UNWRITTEN;
-	bno = XFS_FSB_TO_AGBNO(rcur->bc_mp, startblock);
+	xfs_rmap_ino_owner(&oinfo, ri->ri_owner, ri->ri_whichfork,
+			ri->ri_bmap.br_startoff);
+	unwritten = ri->ri_bmap.br_state == XFS_EXT_UNWRITTEN;
+	bno = XFS_FSB_TO_AGBNO(rcur->bc_mp, ri->ri_bmap.br_startblock);
 
-	switch (type) {
+	switch (ri->ri_type) {
 	case XFS_RMAP_ALLOC:
 	case XFS_RMAP_MAP:
-		error = xfs_rmap_map(rcur, bno, blockcount, unwritten, &oinfo);
+		error = xfs_rmap_map(rcur, bno, ri->ri_bmap.br_blockcount,
+				unwritten, &oinfo);
 		break;
 	case XFS_RMAP_MAP_SHARED:
-		error = xfs_rmap_map_shared(rcur, bno, blockcount, unwritten,
-				&oinfo);
+		error = xfs_rmap_map_shared(rcur, bno,
+				ri->ri_bmap.br_blockcount, unwritten, &oinfo);
 		break;
 	case XFS_RMAP_FREE:
 	case XFS_RMAP_UNMAP:
-		error = xfs_rmap_unmap(rcur, bno, blockcount, unwritten,
-				&oinfo);
+		error = xfs_rmap_unmap(rcur, bno, ri->ri_bmap.br_blockcount,
+				unwritten, &oinfo);
 		break;
 	case XFS_RMAP_UNMAP_SHARED:
-		error = xfs_rmap_unmap_shared(rcur, bno, blockcount, unwritten,
-				&oinfo);
+		error = xfs_rmap_unmap_shared(rcur, bno,
+				ri->ri_bmap.br_blockcount, unwritten, &oinfo);
 		break;
 	case XFS_RMAP_CONVERT:
-		error = xfs_rmap_convert(rcur, bno, blockcount, !unwritten,
-				&oinfo);
+		error = xfs_rmap_convert(rcur, bno, ri->ri_bmap.br_blockcount,
+				!unwritten, &oinfo);
 		break;
 	case XFS_RMAP_CONVERT_SHARED:
-		error = xfs_rmap_convert_shared(rcur, bno, blockcount,
-				!unwritten, &oinfo);
+		error = xfs_rmap_convert_shared(rcur, bno,
+				ri->ri_bmap.br_blockcount, !unwritten, &oinfo);
 		break;
 	default:
 		ASSERT(0);

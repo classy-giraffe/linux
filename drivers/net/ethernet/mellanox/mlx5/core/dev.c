@@ -59,6 +59,9 @@ bool mlx5_eth_supported(struct mlx5_core_dev *dev)
 	if (!IS_ENABLED(CONFIG_MLX5_CORE_EN))
 		return false;
 
+	if (mlx5_core_is_management_pf(dev))
+		return false;
+
 	if (MLX5_CAP_GEN(dev, port_type) != MLX5_CAP_PORT_TYPE_ETH)
 		return false;
 
@@ -111,9 +114,9 @@ static bool is_eth_enabled(struct mlx5_core_dev *dev)
 	union devlink_param_value val;
 	int err;
 
-	err = devlink_param_driverinit_value_get(priv_to_devlink(dev),
-						 DEVLINK_PARAM_GENERIC_ID_ENABLE_ETH,
-						 &val);
+	err = devl_param_driverinit_value_get(priv_to_devlink(dev),
+					      DEVLINK_PARAM_GENERIC_ID_ENABLE_ETH,
+					      &val);
 	return err ? false : val.vbool;
 }
 
@@ -144,9 +147,9 @@ static bool is_vnet_enabled(struct mlx5_core_dev *dev)
 	union devlink_param_value val;
 	int err;
 
-	err = devlink_param_driverinit_value_get(priv_to_devlink(dev),
-						 DEVLINK_PARAM_GENERIC_ID_ENABLE_VNET,
-						 &val);
+	err = devl_param_driverinit_value_get(priv_to_devlink(dev),
+					      DEVLINK_PARAM_GENERIC_ID_ENABLE_VNET,
+					      &val);
 	return err ? false : val.vbool;
 }
 
@@ -198,6 +201,9 @@ bool mlx5_rdma_supported(struct mlx5_core_dev *dev)
 	if (!IS_ENABLED(CONFIG_MLX5_INFINIBAND))
 		return false;
 
+	if (mlx5_core_is_management_pf(dev))
+		return false;
+
 	if (dev->priv.flags & MLX5_PRIV_FLAGS_DISABLE_IB_ADEV)
 		return false;
 
@@ -215,9 +221,9 @@ static bool is_ib_enabled(struct mlx5_core_dev *dev)
 	union devlink_param_value val;
 	int err;
 
-	err = devlink_param_driverinit_value_get(priv_to_devlink(dev),
-						 DEVLINK_PARAM_GENERIC_ID_ENABLE_RDMA,
-						 &val);
+	err = devl_param_driverinit_value_get(priv_to_devlink(dev),
+					      DEVLINK_PARAM_GENERIC_ID_ENABLE_RDMA,
+					      &val);
 	return err ? false : val.vbool;
 }
 
@@ -340,6 +346,7 @@ int mlx5_attach_device(struct mlx5_core_dev *dev)
 	struct auxiliary_driver *adrv;
 	int ret = 0, i;
 
+	devl_assert_locked(priv_to_devlink(dev));
 	mutex_lock(&mlx5_intf_mutex);
 	priv->flags &= ~MLX5_PRIV_FLAGS_DETACH;
 	for (i = 0; i < ARRAY_SIZE(mlx5_adev_devices); i++) {
@@ -370,10 +377,6 @@ int mlx5_attach_device(struct mlx5_core_dev *dev)
 
 			/* Pay attention that this is not PCI driver that
 			 * mlx5_core_dev is connected, but auxiliary driver.
-			 *
-			 * Here we can race of module unload with devlink
-			 * reload, but we don't need to take extra lock because
-			 * we are holding global mlx5_intf_mutex.
 			 */
 			if (!adev->dev.driver)
 				continue;
@@ -393,7 +396,7 @@ int mlx5_attach_device(struct mlx5_core_dev *dev)
 	return ret;
 }
 
-void mlx5_detach_device(struct mlx5_core_dev *dev)
+void mlx5_detach_device(struct mlx5_core_dev *dev, bool suspend)
 {
 	struct mlx5_priv *priv = &dev->priv;
 	struct auxiliary_device *adev;
@@ -401,6 +404,7 @@ void mlx5_detach_device(struct mlx5_core_dev *dev)
 	pm_message_t pm = {};
 	int i;
 
+	devl_assert_locked(priv_to_devlink(dev));
 	mutex_lock(&mlx5_intf_mutex);
 	for (i = ARRAY_SIZE(mlx5_adev_devices) - 1; i >= 0; i--) {
 		if (!priv->adev[i])
@@ -421,7 +425,7 @@ void mlx5_detach_device(struct mlx5_core_dev *dev)
 
 		adrv = to_auxiliary_drv(adev->dev.driver);
 
-		if (adrv->suspend) {
+		if (adrv->suspend && suspend) {
 			adrv->suspend(adev, pm);
 			continue;
 		}
@@ -438,6 +442,7 @@ int mlx5_register_device(struct mlx5_core_dev *dev)
 {
 	int ret;
 
+	devl_assert_locked(priv_to_devlink(dev));
 	mutex_lock(&mlx5_intf_mutex);
 	dev->priv.flags &= ~MLX5_PRIV_FLAGS_DISABLE_ALL_ADEV;
 	ret = mlx5_rescan_drivers_locked(dev);
@@ -450,6 +455,7 @@ int mlx5_register_device(struct mlx5_core_dev *dev)
 
 void mlx5_unregister_device(struct mlx5_core_dev *dev)
 {
+	devl_assert_locked(priv_to_devlink(dev));
 	mutex_lock(&mlx5_intf_mutex);
 	dev->priv.flags = MLX5_PRIV_FLAGS_DISABLE_ALL_ADEV;
 	mlx5_rescan_drivers_locked(dev);

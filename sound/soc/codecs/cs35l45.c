@@ -500,6 +500,8 @@ static const struct snd_soc_component_driver cs35l45_component = {
 	.num_controls = ARRAY_SIZE(cs35l45_controls),
 
 	.name = "cs35l45",
+
+	.endianness = 1,
 };
 
 static int __maybe_unused cs35l45_runtime_suspend(struct device *dev)
@@ -665,7 +667,7 @@ err:
 }
 EXPORT_SYMBOL_NS_GPL(cs35l45_probe, SND_SOC_CS35L45);
 
-int cs35l45_remove(struct cs35l45_private *cs35l45)
+void cs35l45_remove(struct cs35l45_private *cs35l45)
 {
 	pm_runtime_disable(cs35l45->dev);
 
@@ -673,8 +675,6 @@ int cs35l45_remove(struct cs35l45_private *cs35l45)
 	regulator_disable(cs35l45->vdd_a);
 	/* VDD_BATT must be the last to power-off */
 	regulator_disable(cs35l45->vdd_batt);
-
-	return 0;
 }
 EXPORT_SYMBOL_NS_GPL(cs35l45_remove, SND_SOC_CS35L45);
 
@@ -687,4 +687,3 @@ MODULE_DESCRIPTION("ASoC CS35L45 driver");
 MODULE_AUTHOR("James Schulman, Cirrus Logic Inc, <james.schulman@cirrus.com>");
 MODULE_AUTHOR("Richard Fitzgerald <rf@opensource.cirrus.com>");
 MODULE_LICENSE("Dual BSD/GPL");
-MODULE_IMPORT_NS(SND_SOC_CS35L45_TABLES);

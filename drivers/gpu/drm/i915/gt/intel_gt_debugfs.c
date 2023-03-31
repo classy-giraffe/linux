@@ -9,9 +9,9 @@
 #include "intel_gt.h"
 #include "intel_gt_debugfs.h"
 #include "intel_gt_engines_debugfs.h"
+#include "intel_gt_mcr.h"
 #include "intel_gt_pm_debugfs.h"
 #include "intel_sseu_debugfs.h"
-#include "pxp/intel_pxp_debugfs.h"
 #include "uc/intel_uc_debugfs.h"
 
 int intel_gt_debugfs_reset_show(struct intel_gt *gt, u64 *val)
@@ -64,7 +64,7 @@ static int steering_show(struct seq_file *m, void *data)
 	struct drm_printer p = drm_seq_file_printer(m);
 	struct intel_gt *gt = m->private;
 
-	intel_gt_report_steering(&p, gt, true);
+	intel_gt_mcr_report_steering(&p, gt, true);
 
 	return 0;
 }
@@ -98,7 +98,6 @@ void intel_gt_debugfs_register(struct intel_gt *gt)
 	intel_sseu_debugfs_register(gt, root);
 
 	intel_uc_debugfs_register(&gt->uc, root);
-	intel_pxp_debugfs_register(&gt->pxp, root);
 }
 
 void intel_gt_debugfs_register_files(struct dentry *root,
